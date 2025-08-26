@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from numpy.linalg import svd
-import cvxpy as cp
+# #import cvxpy as cp
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
@@ -11,9 +11,9 @@ import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from sparse_recovery.compressed_sensing import create_signal, create_orthonormal_basis, get_measures
-from utils.svd import np_SVD
-from utils.products import face_splitting_product_numpy
-from utils.data_tensor_completion import get_matrices, data_tensor_completion_general
+# #from utils.svd import np_SVD
+# #from utils.products import face_splitting_product_numpy
+# #from utils.data_tensor_completion import get_matrices, data_tensor_completion_general
 
 
 
@@ -53,8 +53,8 @@ def solve_matrix_factorization_nuclear_norm(n_1, n_2, y_star, X1X2=None, X2_bull
         + (reg * cp.norm(F_cvxpy(A, X1X2=X1X2_bar, X2_bullet_X1=X2_bullet_X1_bar), 'fro') if reg!=0 else 0) <= EPSILON]  # tolerance for numerical precision
 
     # Set up and solve the problem
-    problem = cp.Problem(objective, constraints)
-    problem.solve()
+    # #problem = cp.Problem(objective, constraints)
+    # #problem.solve()
 
     # Solution
     A = A.value
