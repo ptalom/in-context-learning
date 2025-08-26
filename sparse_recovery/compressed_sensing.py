@@ -26,4 +26,4 @@ def solve_compressed_sensing_l1(X, y_star, EPSILON=1e-8):
 def coherence():
     return null
 
-    
+    # Recovered sparse representation a
