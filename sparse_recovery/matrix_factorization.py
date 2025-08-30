@@ -193,68 +193,6 @@ def generate_orthogonal_U_V(n_1, n_2, tau_1, tau_2):
 
     return U, V
 
-# n_1, n_2 = 100, 100
-# #Modulate
-# all_mu = []
-# all_nu = []
-# all_tau = np.arange(0, 10+1)/10
-# for tau_1, tau_2 in zip(all_tau, all_tau) :
-#     U, V = generate_orthogonal_U_V(n_1, n_2, tau_1, tau_2)
-#     Sigma = np.eye(max(n_1, n_2))[:n_1, :n_2] # (n_1, n_2)
-#     r=5#min(n_1, n_2)
-#     A = U[:,:r] @ Sigma[:r, :r] @ V[:,:r].T # (n_1, n_2)
-
-#     mu = calculate_coherence(A=U, B=np.eye(n_1))
-#     nu = calculate_coherence(A=V, B=np.eye(n_2))
-#     print(mu, nu)
-
-#     mu, nu = calculate_local_coherence(A, U_n1=None, V_n2=None)
-#     all_mu.append(mu)
-#     all_nu.append(nu)
-#     print(alpha, max(max(mu), max(nu)), max(mu), max(nu))
-#     print("=================")
-
-
-
-# from matplotlib.colors import LogNorm
-# label_fontsize=20
-# ticklabel_fontsize=15
-
-# rows, cols = 1, 2
-# figsize=(6, 4)
-# #figsize=(8, 6)
-# #figsize=(15, 10)
-# figsize=(cols*figsize[0], rows*figsize[1])
-# fig = plt.figure(figsize=figsize)
-
-# for i, (label, data) in enumerate(zip(["mu", "nu"], [all_mu, all_nu])):
-
-#     ax = fig.add_subplot(rows, cols, i+1)
-
-#     img_data = np.array(data) # (alphas, dimensions)
-#     img = custom_imshow(
-#         img_data, ax=ax, fig=fig, add_text=False,
-#         hide_ticks_and_labels=False, xticklabels=np.arange(1, img_data.shape[1]+1), yticklabels=all_tau,
-#         filter_step_xticks=5, filter_step_yticks=1  if i==0 else 10**5, log_x=False, log_y=False, base=10,
-#         rotation_x=90, rotation_y=0,
-#         x_label="Dimensions (n)",  y_label="$\\alpha$" if i==0 else "",
-#         # Use LogNorm to apply a logarithmic scale
-#         colormesh_kwarg={"shading":'auto', "cmap":'viridis'}, # 'norm':LogNorm(vmin=img_data.min(), vmax=img_data.max())
-#         imshow_kwarg={},
-#         colorbar=True, colorbar_label=f'$\\{label}$',
-#         label_fontsize=label_fontsize,
-#         ticklabel_fontsize=ticklabel_fontsize,
-#         show=False, fileName=None, dpf=None
-#     )
-
-# ##
-# #plt.savefig(f"{DIR_PATH_FIGURES}/TODO"  + '.pdf', dpi=300, bbox_inches='tight', format='pdf')
-
-# plt.show()
-
-
-########################################################################################
-########################################################################################
 
 # Face splitting product
 
