@@ -1,15 +1,17 @@
 task:
   name: matrix_factorization
   kwargs:
-    N: 50
-    s: 3
-    Phi: identity # choose between : identity, fourier, normal, random
-    d: 20
-    tau: 0.5 # in [0,1]
+    N: 20
+    n1: 20
+    n2: 20
+    rank: 3
+    problem: matrix-completion   # or matrix-sensing
+    tau: 0.3                     # [0,1] 
+    seed: 42
 
 model:
   type: transformer
-  n_dims: 20
+  n_dims: 40
   d_model: 64
   nhead: 4
   num_layers: 2

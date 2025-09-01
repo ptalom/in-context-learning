@@ -6,6 +6,7 @@ from tasks import get_task
 from models import build_model
 import yaml
 import os
+import argparse
 
 def train_step(model, xs, ys, optimizer, loss_func):
     model.train()
@@ -45,12 +46,12 @@ def train(conf):
         print(f"[{section}]")
         section_conf = conf[section]
 
-        # Si c'est une liste de dicts
+        
         if isinstance(section_conf, list):
             for sub_conf in section_conf:
                 for k, v in sub_conf.items():
                     print(f"{k}: {v}")
-        # Si c'est directement un dict
+        
         elif isinstance(section_conf, dict):
             for k, v in section_conf.items():
                 print(f"{k}: {v}")
@@ -74,7 +75,7 @@ def train(conf):
                   f"Weights mean: {weight_mean:.6f}, std: {weight_std:.6f}")
             print(f"Preds mean: {output.mean().item():.4f}, min: {output.min().item():.4f}, max: {output.max().item():.4f}\n")
         
-        # --- Sauvegarde périodique ---
+       
         if step % save_every == 0:
             state = {
                 "model_state_dict": model.state_dict(),
@@ -85,8 +86,12 @@ def train(conf):
 
 # --- Main ---
 if __name__ == "__main__":
-    conf_path = "conf/compressed_sensing.yaml"
-    with open(conf_path, 'r') as f:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, default='conf/compressed_sensing.yaml',
+                        help='Path to config YAML file')
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
         conf = yaml.safe_load(f)
 
     train(conf)

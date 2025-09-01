@@ -3,6 +3,25 @@ import torch
 import torch.nn as nn
 from transformers import GPT2Config, GPT2Model   
 
+from sklearn.linear_model import Lasso
+import warnings
+
+def get_relevant_baselines(task_name):
+    task_to_baselines = {
+        "sparse_recovery": [
+            (LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
+        ],
+        "matrix_factorization": [
+            (LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
+        ],
+
+    }
+
+    models = [model_cls(**kwargs) for model_cls, kwargs in task_to_baselines[task_name]]
+    return models
+
+
+
 class TransformerModel(nn.Module):
     """
     Small encoder-based Transformer for ICL-style experiments.
@@ -89,3 +108,59 @@ def build_model(conf):
     n_head = conf.get("n_head", 4)
 
     return TransformerModel(n_dims, n_positions, n_embd=n_embd, n_layer=n_layer, n_head=n_head)
+
+
+class LassoModel:
+    def __init__(self, alpha, max_iter=100000):
+        # the l1 regularizer gets multiplied by alpha.
+        self.alpha = alpha
+        self.max_iter = max_iter
+        self.name = f"lasso_alpha={alpha}_max_iter={max_iter}"
+
+    # inds is a list containing indices where we want the prediction.
+    # prediction made at all indices by default.
+    def __call__(self, xs, ys, inds=None):
+        xs, ys = xs.cpu(), ys.cpu()
+
+        if inds is None:
+            inds = range(ys.shape[1])
+        else:
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+
+        preds = []  # predict one for first point
+
+        # i: loop over num_points
+        # j: loop over bsize
+        for i in inds:
+            pred = torch.zeros_like(ys[:, 0])
+
+            if i > 0:
+                pred = torch.zeros_like(ys[:, 0])
+                for j in range(ys.shape[0]):
+                    train_xs, train_ys = xs[j, :i], ys[j, :i]
+
+                    # If all points till now have the same label, predict that label.
+
+                    clf = Lasso(
+                        alpha=self.alpha, fit_intercept=False, max_iter=self.max_iter
+                    )
+
+                    # Check for convergence.
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("error")
+                        try:
+                            clf.fit(train_xs, train_ys)
+                        except Warning:
+                            print(f"lasso convergence warning at i={i}, j={j}.")
+                            raise
+
+                    w_pred = torch.from_numpy(clf.coef_).unsqueeze(1)
+
+                    test_x = xs[j, i : i + 1]
+                    y_pred = (test_x @ w_pred.float()).squeeze(1)
+                    pred[j] = y_pred[0]
+
+            preds.append(pred)
+
+        return torch.stack(preds, dim=1)

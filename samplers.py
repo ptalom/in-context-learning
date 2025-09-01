@@ -60,8 +60,6 @@ class CompressedSensingSampler:
         X = np.array(M, dtype=np.float32)    # shape (N, d)
         y = X @ w_star                        # shape (N,1)
 
-        
-        # Conversion en torch
         X = torch.tensor(X, dtype=torch.float32)
         y = torch.tensor(y, dtype=torch.float32)
         w_star = torch.tensor(w_star.T, dtype=torch.float32)  # (1,d)
@@ -69,38 +67,68 @@ class CompressedSensingSampler:
 
         return X, y, w_star, a_star
     
-
 class MatrixFactorizationSampler:
-    """
-    Wrapper for get_measures_matrix_completion.
-    Returns Xt (1,N,feat_dim), yt (1,N)
-    If one_hot=False encodes (i,j) as 2 scalars; else one-hot concatenation.
-    """
-    def __init__(self, A_star, N, X1=None, X2=None, P=None, tau=0.0, one_hot=False, shuffle=True, seed=None, device='cpu'):
-        self.A_star = np.asarray(A_star)
+    
+    def __init__(
+        self,
+        N: int,
+        n1: int,
+        n2: int,
+        rank: int,
+        problem: str = "matrix-completion",   # 'matrix-completion' / 'matrix-sensing'
+        tau: float = 0.0,                     
+        variance=None,
+        seed: int | None = None,
+        device: str = "cpu",
+    ):
+        assert problem in ("matrix-completion", "matrix-sensing"), \
+            f"problem must be 'matrix-completion' or 'matrix-sensing', received {problem}"
+        assert 0.0 <= tau <= 1.0, f"tau must be in [0,1], received {tau}"
+
         self.N = N
-        self.X1 = X1
-        self.X2 = X2
-        self.P = P
+        self.n1 = n1
+        self.n2 = n2
+        self.rank = rank
+        self.problem = problem
         self.tau = tau
-        self.one_hot = one_hot
-        self.shuffle = shuffle
+        self.variance = variance
         self.seed = seed
         self.device = device
 
+        A_star, U_star, Sigma_star, V_star = get_matrices_UV(
+            n_1=n1, n_2=n2, rank=rank, seed=seed
+        )
+        self.A_star = A_star.astype(np.float32)
+        self.U_star = U_star.astype(np.float32)
+        self.V_star = V_star.astype(np.float32)
+        
+        self.Sigma_star = Sigma_star.astype(np.float32)
+
+        print(f"[MF Sampler] A*: {self.A_star.shape}, U*: {self.U_star.shape}, V*: {self.V_star.shape}")
+        print(f"[MF Sampler] problem={self.problem}, N={self.N}, tau={self.tau}")
+
     def sample(self):
-        X1, X2, y_star = get_measures_matrix_completion(self.A_star, self.N, X1=self.X1, X2=self.X2, P=self.P, tau=self.tau, one_hot=self.one_hot, shuffle=self.shuffle, seed=self.seed)
-        X1 = np.asarray(X1)
-        X2 = np.asarray(X2)
-        y = np.asarray(y_star).reshape(-1)
-        if self.one_hot:
-            n1, n2 = self.A_star.shape
-            enc = np.concatenate([np.eye(n1)[X1.astype(int)], np.eye(n2)[X2.astype(int)]], axis=1)
-        else:
-            enc = np.stack([X1.astype(float), X2.astype(float)], axis=1)  # (N,2)
-        Xt = torch.tensor(enc, dtype=torch.float32, device=self.device).unsqueeze(0)  # (1,N,feat)
-        yt = torch.tensor(y, dtype=torch.float32, device=self.device).unsqueeze(0)    # (1,N)
-        return Xt, yt
+        
+        # Mesures (X1, X2, X2•X1, y)
+        (X1, X2, X2_bullet_X1, y_star), _ = get_data_matrix_factorization(
+            self.A_star, self.U_star, self.V_star,
+            self.N,
+            problem=self.problem,
+            tau=self.tau,
+            variance=self.variance,
+            seed=self.seed,
+        )
+        # X1: (N, n1)  | X2: (N, n2)  | y_star: (N,)
+
+        X_np = np.concatenate([X1, X2], axis=1).astype(np.float32)
+        y_np = y_star.astype(np.float32).reshape(-1)
+
+        X = torch.tensor(X_np, dtype=torch.float32, device=self.device).unsqueeze(0)  # (1, N, n1+n2)
+        y = torch.tensor(y_np, dtype=torch.float32, device=self.device).unsqueeze(0)  # (1, N)
+
+        return X, y, None, None
+    
+
 
 def get_data_sampler(name, **kwargs):
     name = name.lower()
