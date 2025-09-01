@@ -1,0 +1,3 @@
+# Outputs des entraînements
+outputs/matrix_factorization/
+outputs/compressed_sensing/

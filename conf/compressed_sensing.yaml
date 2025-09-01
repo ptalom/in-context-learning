@@ -25,4 +25,4 @@ training:
   print_every: 100
 
 
-out_dir: outputs/compressed_sensing
+#out_dir: outputs/compressed_sensing
