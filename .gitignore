@@ -1,3 +1,5 @@
-# Outputs des entraînements
+# training outputs
 outputs/matrix_factorization/
 outputs/compressed_sensing/
+.ipynb_checkpoints
+__pycache__

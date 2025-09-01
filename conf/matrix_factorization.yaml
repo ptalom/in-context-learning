@@ -27,4 +27,4 @@ training:
   print_every: 100
 
 
-#out_dir: outputs/matrix_factorization
+out_dir: outputs/matrix_factorization
