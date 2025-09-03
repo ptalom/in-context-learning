@@ -1,10 +1,11 @@
 import numpy as np
 import torch
+
+
 from sparse_recovery.compressed_sensing import create_signal, create_Fourier_basis, create_normal_basis, create_orthonormal_basis, get_measures
 
-from sparse_recovery.matrix_factorization import get_matrices_UV, get_matrices_IndentityUV, get_matrices_QR_UV, calculate_local_coherence
+from sparse_recovery.matrix_factorization import get_matrices_UV
 from sparse_recovery.matrix_factorization import get_data_matrix_factorization, solve_matrix_factorization_nuclear_norm
-from sparse_recovery.matrix_factorization import get_measures_matrix_completion
 
 class CompressedSensingSampler:
     def __init__(self, N, d, s, Phi=None, tau=0, variance=None, seed=None):
@@ -33,7 +34,7 @@ class CompressedSensingSampler:
         else:
             self.Phi = np.array(Phi, dtype=np.float32)
 
-        print(f"[Sampler] Using Phi of shape {self.Phi.shape} (type: {type(Phi).__name__})")
+        #print(f"[Compressed Sensing Sampler] Using Phi of shape {self.Phi.shape} (type: {type(Phi).__name__})")
 
     def sample(self):
         """
@@ -66,7 +67,7 @@ class CompressedSensingSampler:
         a_star = torch.tensor(a_star.T, dtype=torch.float32)  # (1,d)
 
         return X, y, w_star, a_star
-    
+
 class MatrixFactorizationSampler:
     
     def __init__(
@@ -82,7 +83,7 @@ class MatrixFactorizationSampler:
         device: str = "cpu",
     ):
         assert problem in ("matrix-completion", "matrix-sensing"), \
-            f"problem must be 'matrix-completion' or 'matrix-sensing', received {problem}"
+            f"problem must be 'matrix-completion' or 'matrix-sensing', received :{problem}"
         assert 0.0 <= tau <= 1.0, f"tau must be in [0,1], received {tau}"
 
         self.N = N
@@ -104,8 +105,8 @@ class MatrixFactorizationSampler:
         
         self.Sigma_star = Sigma_star.astype(np.float32)
 
-        print(f"[MF Sampler] A*: {self.A_star.shape}, U*: {self.U_star.shape}, V*: {self.V_star.shape}")
-        print(f"[MF Sampler] problem={self.problem}, N={self.N}, tau={self.tau}")
+        print(f"[Matrix Factorization Sampler] A*: {self.A_star.shape}, U*: {self.U_star.shape}, V*: {self.V_star.shape}")
+        print(f"[Matrix Factorization Sampler] problem={self.problem}, N={self.N}, tau={self.tau}")
 
     def sample(self):
         

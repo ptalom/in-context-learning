@@ -1,5 +1,4 @@
-outputs/matrix_factorization/
-outputs/compressed_sensing/
+outputs
 .ipynb_checkpoints
 __pycache__
 sparse_recovery/__pycache__

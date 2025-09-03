@@ -5,7 +5,7 @@ task:
     n1: 20
     n2: 20
     rank: 3
-    problem: matrix-completion   # or matrix-sensing
+    problem: matrix-sensing   # matrix-completion or matrix-sensing
     tau: 0.3                     # [0,1] 
     seed: 42
 
@@ -21,10 +21,10 @@ model:
 training:
   batch_size: 64
   learning_rate: 0.0001
-  train_steps: 1000
-  save_every_steps: 100
-  keep_every_steps: 1000
-  print_every: 100
+  train_steps: 100000
+  save_every_steps: 10000
+  keep_every_steps: 100000
+  print_every: 100000
 
 
 out_dir: outputs/matrix_factorization

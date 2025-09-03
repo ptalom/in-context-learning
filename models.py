@@ -6,13 +6,36 @@ from transformers import GPT2Config, GPT2Model
 from sklearn.linear_model import Lasso
 import warnings
 
+def build_model(conf):
+    """
+    Crée le TransformerModel à partir de la configuration YAML.
+    conf doit contenir au minimum :
+        n_dims: dimension d'entrée des x
+        n_positions: longueur max des séquences
+        n_embd: dimension des embeddings (optionnel)
+        n_layer: nombre de couches Transformer (optionnel)
+        n_head: nombre de têtes d'attention (optionnel)
+    """
+    n_dims = conf["n_dims"]
+    n_positions = conf["n_positions"]
+    n_embd = conf.get("n_embd", 128)
+    n_layer = conf.get("n_layer", 4)
+    n_head = conf.get("n_head", 4)
+
+    return TransformerModel(n_dims, n_positions, n_embd=n_embd, n_layer=n_layer, n_head=n_head)
+
+
 def get_relevant_baselines(task_name):
     task_to_baselines = {
         "sparse_recovery": [
-            (LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
+            (LeastSquaresModel, {}),
+        ]
+        + [(LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
         ],
         "matrix_factorization": [
-            (LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
+            (LeastSquaresModel, {}),
+        ]
+        + [(LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
         ],
 
     }
@@ -89,25 +112,7 @@ class TransformerModel(nn.Module):
             inds = [inds]
         inds = torch.tensor(inds, dtype=torch.long, device=preds_x_positions.device)
         return preds_x_positions[:, inds]
-    
 
-def build_model(conf):
-    """
-    Crée le TransformerModel à partir de la configuration YAML.
-    conf doit contenir au minimum :
-        n_dims: dimension d'entrée des x
-        n_positions: longueur max des séquences
-        n_embd: dimension des embeddings (optionnel)
-        n_layer: nombre de couches Transformer (optionnel)
-        n_head: nombre de têtes d'attention (optionnel)
-    """
-    n_dims = conf["n_dims"]
-    n_positions = conf["n_positions"]
-    n_embd = conf.get("n_embd", 128)
-    n_layer = conf.get("n_layer", 4)
-    n_head = conf.get("n_head", 4)
-
-    return TransformerModel(n_dims, n_positions, n_embd=n_embd, n_layer=n_layer, n_head=n_head)
 
 
 class LassoModel:
@@ -162,5 +167,38 @@ class LassoModel:
                     pred[j] = y_pred[0]
 
             preds.append(pred)
+
+        return torch.stack(preds, dim=1)
+
+
+
+class LeastSquaresModel:
+    def __init__(self, driver=None):
+        self.driver = driver
+        self.name = f"OLS_driver={driver}"
+
+    def __call__(self, xs, ys, inds=None):
+        xs, ys = xs.cpu(), ys.cpu()
+        if inds is None:
+            inds = range(ys.shape[1])
+        else:
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+
+        preds = []
+
+        for i in inds:
+            if i == 0:
+                preds.append(torch.zeros_like(ys[:, 0]))  # predict zero for first point
+                continue
+            train_xs, train_ys = xs[:, :i], ys[:, :i]
+            test_x = xs[:, i : i + 1]
+
+            ws, _, _, _ = torch.linalg.lstsq(
+                train_xs, train_ys.unsqueeze(2), driver=self.driver
+            )
+
+            pred = test_x @ ws
+            preds.append(pred[:, 0, 0])
 
         return torch.stack(preds, dim=1)

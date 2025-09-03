@@ -235,7 +235,7 @@ def data_tensor_completion_general(A, one_hot=False, seed=None):
 
     # ## Generate all possible indices (stochastic permutation)
     perm = torch.randperm(N) # (N,)
-    indices = [(perm // (torch.prod(torch.tensor(shape[r+1:])) if r+1 < R else 1)) % shape[r] for r in range(R)] # (R, N)
+    indices = [(torch.div(perm, torch.prod(torch.tensor(shape[r+1:])) if r+1 < R else 1, rounding_mode="trunc" ) % shape[r]) for r in range(R)]# (R, N)
     X = [indices[r] for r in range(R)] # (R, N)
     ## Generate all possible indices using meshgrid (deteministic permutation)
     grids = torch.meshgrid(*[torch.arange(dim) for dim in shape], indexing='ij')
