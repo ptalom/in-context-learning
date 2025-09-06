@@ -36,37 +36,54 @@ class CompressedSensingSampler:
 
         #print(f"[Compressed Sensing Sampler] Using Phi of shape {self.Phi.shape} (type: {type(Phi).__name__})")
 
-    def sample(self):
+    def sample(self, batch_size=1):
         """
-        xs : (N, d)
-        ys : (N,)
+        Retourne :
+            xs : (batch_size, N, d)
+            ys : (batch_size, N, 1)
+            w_star : (batch_size, d)
+            a_star : (batch_size, d)
         """
-        # Génération du signal sparse a*
-        a_star, _ = create_signal(n=self.d, s=self.s, distribution="normal", Phi=None, scaler=None, seed=self.seed)
-        a_star = np.array(a_star, dtype=np.float32)  
+        xs_list, ys_list, w_list, a_list = [], [], [], []
 
-        # Génération de w* = Phi @ a*
-        w_star = self.Phi @ a_star
+        for _ in range(batch_size):
+            # Génération du signal sparse a*
+            a_star, _ = create_signal(
+                n=self.d, s=self.s,
+                distribution="normal", Phi=None,
+                scaler=None, seed=self.seed
+            )
+            a_star = np.array(a_star, dtype=np.float32)
 
-        # Génération de la matrice de mesures M
-        M = get_measures(
-            N=self.N,
-            Phi=self.Phi,
-            tau=self.tau,
-            variance=self.variance,
-            seed=self.seed,
-        )
+            # Génération de w* = Phi @ a*
+            w_star = self.Phi @ a_star
 
-        # Données (X, y) : y = M @ w*
-        X = np.array(M, dtype=np.float32)    # shape (N, d)
-        y = X @ w_star                        # shape (N,1)
+            # Génération de la matrice de mesures M
+            M = get_measures(
+                N=self.N,
+                Phi=self.Phi,
+                tau=self.tau,
+                variance=self.variance,
+                seed=self.seed,
+            )
 
-        X = torch.tensor(X, dtype=torch.float32)
-        y = torch.tensor(y, dtype=torch.float32)
-        w_star = torch.tensor(w_star.T, dtype=torch.float32)  # (1,d)
-        a_star = torch.tensor(a_star.T, dtype=torch.float32)  # (1,d)
+            # Données (X, y) : y = M @ w*
+            X = np.array(M, dtype=np.float32).mean(axis=1)     # (N, d)
+            y = X @ w_star                         # (N,)
 
-        return X, y, w_star, a_star
+            # Stockage
+            xs_list.append(X)
+            ys_list.append(y)  # (N,)
+            w_list.append(w_star)
+            a_list.append(a_star)
+
+        xs = torch.tensor(np.stack(xs_list), dtype=torch.float32)       # (batch, N, d)
+        ys = torch.tensor(np.stack(ys_list), dtype=torch.float32)  # (batch, N)
+        w_star = torch.tensor(np.stack(w_list), dtype=torch.float32)    # (batch, d)
+        a_star = torch.tensor(np.stack(a_list), dtype=torch.float32)    # (batch, d)
+
+        return xs, ys, w_star, a_star
+
 
 class MatrixFactorizationSampler:
     

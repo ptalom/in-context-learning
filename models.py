@@ -30,12 +30,12 @@ def get_relevant_baselines(task_name):
         "sparse_recovery": [
             (LeastSquaresModel, {}),
         ]
-        + [(LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
+        + [(LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001]
         ],
         "matrix_factorization": [
             (LeastSquaresModel, {}),
         ]
-        + [(LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001, 0.0001]
+        + [(LassoModel, {"alpha": alpha}) for alpha in [1, 0.1, 0.01, 0.001]
         ],
 
     }
@@ -46,23 +46,9 @@ def get_relevant_baselines(task_name):
 
 
 class TransformerModel(nn.Module):
-    """
-    Small encoder-based Transformer for ICL-style experiments.
-    Signature: forward(xs, ys, inds=None)
-      - xs: (batch, seq_len, n_dims)
-      - ys: (batch, seq_len)          (float values)
-      - inds: list/array of positions to return (relative to seq)
-    Returns preds: (batch, len(inds))
-    """
-    def __init__(self, n_dims, n_positions, n_embd=128, n_layer=4, n_head=4):
-        super().__init__()
-        self.n_dims = n_dims
-        self.n_positions = n_positions
-        self.n_embd = n_embd
-
-        self._read_in = nn.Linear(n_dims, n_embd)
-    
-        cfg = GPT2Config(
+    def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4):
+        super(TransformerModel, self).__init__()
+        configuration = GPT2Config(
             n_positions=2 * n_positions,
             n_embd=n_embd,
             n_layer=n_layer,
@@ -72,46 +58,44 @@ class TransformerModel(nn.Module):
             attn_pdrop=0.0,
             use_cache=False,
         )
-        self._backbone = GPT2Model(cfg)
+        self.name = f"gpt2_embd={n_embd}_layer={n_layer}_head={n_head}"
+
+        self.n_positions = n_positions
+        self.n_dims = n_dims
+        self._read_in = nn.Linear(n_dims, n_embd)
+        self._backbone = GPT2Model(configuration)
         self._read_out = nn.Linear(n_embd, 1)
 
     @staticmethod
     def _combine(xs_b, ys_b):
-        """
-        Interleave xs and ys into sequence of length 2*L:
-          (x1, y1_wide, x2, y2_wide, ..., xL, yL_wide)
-        where y*_wide is a vector of same dim as x with y in first coord and zeros else.
-        xs_b: (batch, L, dim)
-        ys_b: (batch, L)
-        => out (batch, 2L, dim)
-        """
-        bsize, L, dim = xs_b.shape
-        ys_wide = torch.cat([ys_b.view(bsize, L, 1),
-                              torch.zeros(bsize, L, dim - 1, device=xs_b.device)], dim=2)
-        zs = torch.stack((xs_b, ys_wide), dim=2)           
-        zs = zs.view(bsize, 2 * L, dim)                    
+        """Interleaves the x's and the y's into a single sequence."""
+        bsize, points, dim = xs_b.shape
+        ys_b_wide = torch.cat(
+            (
+                ys_b.view(bsize, points, 1),
+                torch.zeros(bsize, points, dim - 1, device=ys_b.device),
+            ),
+            axis=2,
+        )
+        zs = torch.stack((xs_b, ys_b_wide), dim=2)
+        zs = zs.view(bsize, 2 * points, dim)
         return zs
 
     def forward(self, xs, ys, inds=None):
-        """
-        xs: torch.FloatTensor (batch, L, n_dims)
-        ys: torch.FloatTensor (batch, L)
-        inds: list indices among positions of xs we want to predict (indices in 0..L-1)
-        Returns: preds (batch, len(inds))
-        """
-
-        zs = self._combine(xs, ys)            
-        embeds = self._read_in(zs)            
-        output = self._backbone(inputs_embeds=embeds).last_hidden_state  
-        pred_all = self._read_out(output).squeeze(-1)                   
-
-        preds_x_positions = pred_all[:, 0::2]  
         if inds is None:
-            return preds_x_positions
-        if isinstance(inds, int):
-            inds = [inds]
-        inds = torch.tensor(inds, dtype=torch.long, device=preds_x_positions.device)
-        return preds_x_positions[:, inds]
+            inds = torch.arange(ys.shape[1])
+        else:
+            inds = torch.tensor(inds)
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+        zs = self._combine(xs, ys)
+        embeds = self._read_in(zs)
+        output = self._backbone(inputs_embeds=embeds).last_hidden_state
+        prediction = self._read_out(output)
+        return prediction[:, ::2, 0][:, inds]  # predict only on xs
+
+
+
 
 
 

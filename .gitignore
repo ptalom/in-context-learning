@@ -2,3 +2,4 @@ outputs
 .ipynb_checkpoints
 __pycache__
 sparse_recovery/__pycache__
+evaal.ipynb

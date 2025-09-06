@@ -1,15 +1,22 @@
 import torch
 from torch import nn, optim
+from random import randint
 from tqdm import tqdm
-
-from tasks import get_task
-from models import build_model
+from munch import Munch
 import yaml
 import os
 import argparse
 import json
 from datetime import datetime
 import sys
+
+from samplers import get_data_sampler
+from tasks import get_task
+from models import build_model
+from eval import get_run_metrics  # Import de la fonction pour calculer les métriques
+
+
+torch.backends.cudnn.benchmark = True
 
 def train_step(model, xs, ys, optimizer, loss_func):
     model.train()
@@ -21,28 +28,17 @@ def train_step(model, xs, ys, optimizer, loss_func):
     return loss.item(), output.detach()
 
 def create_run_dir(base_dir="outputs", task="default_task", config=None):
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_dir = os.path.join(base_dir, task, timestamp)
+    #timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    #run_dir = os.path.join(base_dir, task, timestamp)
+    run_dir = os.path.join(base_dir, task, "model_pretrained")
     os.makedirs(run_dir, exist_ok=True)
     os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
 
     if config is not None:
         with open(os.path.join(run_dir, "config.yaml"), "w") as f:
-            yaml.dump(config, f)
-
-    sys.stdout = open(os.path.join(run_dir, "logs.txt"), "w")
+            yaml.dump(config.toDict() if isinstance(config, Munch) else config, f)
 
     return run_dir
-
-def save_results(run_dir, results_dict):
-    # Si c’est un DataFrame, on le convertit
-    if hasattr(results_dict, "to_dict"):
-        results_dict = results_dict.to_dict(orient="records")
-        if len(results_dict) == 1:
-            results_dict = results_dict[0]  
-    
-    with open(os.path.join(run_dir, "results.json"), "w") as f:
-        json.dump(results_dict, f, indent=4)
 
 
 def save_checkpoint(run_dir, model_state, optimizer_state, step):
@@ -53,7 +49,7 @@ def save_checkpoint(run_dir, model_state, optimizer_state, step):
         "step": step
     }, ckpt_path)
 
-def train(conf):
+def train(conf, recompute_metrics=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Créer dossier de run
@@ -62,6 +58,7 @@ def train(conf):
 
     # Modèle
     model = build_model(conf['model'])
+    setattr(model, "name", conf['model'].get('type', 'Transformer'))    
     model = model.to(device)
     model.train()
 
@@ -94,9 +91,11 @@ def train(conf):
     for step in tqdm(range(1, train_steps + 1)):
         xs, ys, _, _ = task.sample()
         xs, ys = xs.to(device), ys.to(device)
+        # Flatten ys pour matcher output
+        ys = ys.view(ys.size(0), -1)   # [1, 100]
 
         loss, output = train_step(model, xs, ys, optimizer, loss_func)
-
+        
         if step % print_every == 0 or step == 1:
             weight_mean = model._read_in.weight.mean().item()
             weight_std = model._read_in.weight.std().item()
@@ -108,11 +107,15 @@ def train(conf):
         if step % save_every == 0:
             save_checkpoint(run_dir, model.state_dict(), optimizer.state_dict(), step)
 
-    # Sauvegarder résultats finaux
-    final_results = {"final_loss": loss}
-    save_results(run_dir, final_results)
+
+    # --- Calcul automatique des métriques à la fin ---
+    if recompute_metrics:
+        print("\n=== Computing run metrics ===")
+        get_run_metrics(run_dir)
 
 # --- Main ---
+'''
+'''
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='conf/compressed_sensing.yaml',
@@ -120,6 +123,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
-        conf = yaml.safe_load(f)
+        conf_dict = yaml.safe_load(f)
 
-    train(conf)
+    conf = Munch.fromDict(conf_dict)
+
+    train(conf, recompute_metrics=True)

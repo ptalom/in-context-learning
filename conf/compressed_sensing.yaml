@@ -10,11 +10,8 @@ task:
 model:
   type: transformer
   n_dims: 20
-  d_model: 64
-  nhead: 4
-  num_layers: 2
-  dim_feedforward: 128
   n_positions: 101
+  
 
 training:
   batch_size: 64
@@ -23,6 +20,6 @@ training:
   save_every_steps: 10000
   keep_every_steps: 100000
   print_every: 100000
-
+  points: 50
 
 out_dir: outputs/compressed_sensing
