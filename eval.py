@@ -1,5 +1,7 @@
 import os
 import json
+import sys
+
 from munch import Munch
 import torch
 import yaml
@@ -11,8 +13,7 @@ from tqdm import tqdm
 import models
 
 from models import build_model
-from samplers import get_data_sampler
-from samplers import CompressedSensingSampler, MatrixFactorizationSampler
+from samplers import get_data_sampler, sample_transformation
 from tasks import get_task
 
 
@@ -100,98 +101,237 @@ def eval_batch(model, task_sampler, xs, xs_p=None):
             ys = task_sampler.evaluate(xs_comb)
             pred = model(xs_comb.to(device), ys.to(device), inds=[i]).detach()
             metrics[:, i] = task_sampler.get_metric()(pred.cpu(), ys)
-
+    print("go eval_batch")
     return metrics
 
 
-
-def generate_eval_data(task_name, N, tau, **kwargs):
+'''
+def gen_coherence_tau(data_sampler, n_points, b_size, tau):
     """
-    Wrapper pour générer un batch d'évaluation, selon la tâche.
-    Pour sparse_recovery : kwargs = d, s, Phi
-    Pour matrix_factorization : kwargs = n1, n2, rank, problem
-        problem ∈ {"matrix-completion", "matrix-sensing"}
+    Génère un prompt (xs_train_pre, xs_test_post) pour la sparse recovery
+    avec un degré de cohérence contrôlé par tau.
     """
-    if task_name == "sparse_recovery":
-        required = ["d", "s", "Phi"]
-        for r in required:
-            if r not in kwargs:
-                raise ValueError(f"Pour sparse_recovery, il faut fournir {required}")
-        sampler = get_data_sampler(
-            "sparse_recovery",
-            N=N,
-            d=kwargs["d"],
-            s=kwargs["s"],
-            tau=tau,
-            Phi=kwargs["Phi"]
-        )
 
-    elif task_name == "matrix_factorization":
-        required = ["n1", "n2", "rank", "problem"]
-        for r in required:
-            if r not in kwargs:
-                raise ValueError(f"Pour matrix_factorization, il faut fournir {required}")
-        sampler = get_data_sampler(
-            "matrix_factorization",
-            N=N,
-            n1=kwargs["n1"],
-            n2=kwargs["n2"],
-            rank=kwargs["rank"],
-            tau=tau,
-            problem=kwargs["problem"]  
-        )
+    # Tirage initial d'exemples
+    xs = data_sampler.sample(n_points, b_size)
+    
+    # Si xs est un tuple (xs, ...) prendre le premier élément
+    if isinstance(xs, tuple):
+        xs = xs[0]
+
+    xs_train_pre = xs.clone()
+    xs_test_post = xs.clone()
+
+    # Cas tau = 0 : pure incohérence
+    if tau == 0:
+        xs_train_pre = torch.randn_like(xs_train_pre)
 
     else:
-        raise ValueError(f"Tâche inconnue : {task_name}")
+        # Convertir Phi en torch.Tensor si nécessaire
+        Phi = data_sampler.Phi
+        if not isinstance(Phi, torch.Tensor):
+            Phi = torch.tensor(Phi, dtype=xs_train_pre.dtype, device=xs_train_pre.device)
 
-    return sampler.sample()
+        # SVD
+        U, _, _ = torch.linalg.svd(Phi, full_matrices=False)
+        proj = U @ U.transpose(0, 1)
 
+        if tau == 1:
+            xs_train_pre = xs_train_pre @ proj
+        elif tau == 0.5:
+            xs_proj = xs_train_pre @ proj
+            xs_rand = torch.randn_like(xs_train_pre)
+            xs_train_pre = 0.5 * xs_proj + 0.5 * xs_rand
 
-# --- Evaluation complète ---
+    xs_test_post = xs_train_pre.clone()
+    print("n_points = ", n_points)
+    return xs_train_pre, xs_test_post
+'''
+def gen_coherence_tau(data_sampler, n_points, b_size, tau):
+    """
+    Génère xs_train et xs_test pour sparse recovery selon un degré de cohérence tau.
+    
+    Args:
+        data_sampler : instance du sampler (CompressedSensingSampler)
+        n_points : int, nombre d'exemples dans le prompt
+        b_size : int, batch size
+        tau : float entre 0 et 1, cohérence avec la base Phi
+    Returns:
+        xs_train_pre : Tensor (batch_size, n_points, d)
+        xs_test_post : Tensor (batch_size, n_points, d)
+    """
+    xs_list = []
+
+    for _ in range(b_size):
+        xs, _, _, _ = data_sampler.sample(batch_size=1, n_points=n_points)
+        xs = xs.squeeze(0)  # shape: (n_points, d)
+        if tau == 0:
+            xs = torch.randn_like(xs)
+        else:
+            Phi = torch.tensor(data_sampler.Phi, dtype=xs.dtype, device=xs.device)
+            U, _, _ = torch.linalg.svd(Phi, full_matrices=False)
+            proj = U @ U.T
+            if tau == 1:
+                xs = xs @ proj
+            elif 0 < tau < 1:
+                xs = tau * (xs @ proj) + (1 - tau) * torch.randn_like(xs)
+        xs_list.append(xs)
+
+    xs_tensor = torch.stack(xs_list, dim=0)  # (batch_size, n_points, d)
+    xs_train_pre = xs_tensor.clone()
+    xs_test_post = xs_tensor.clone()
+    return xs_train_pre, xs_test_post
+'''
 def eval_model(
     model,
     task_name,
     data_name,
     n_dims,
     n_points,
-    prompting_strategy,
     num_eval_examples=1280,
     batch_size=64,
-    data_sampler_kwargs=None,
-    task_sampler_kwargs=None,
+    data_sampler_kwargs={},
+    task_sampler_kwargs={},
+    conf=None,
+    prompting_strategy=None,
 ):
     """
-    Evaluate a model on a task with a variety of strategies.
+    Évalue un modèle sur la tâche Sparse Recovery en utilisant exclusivement
+    gen_coherence_tau() pour générer les prompts.
     """
 
     assert num_eval_examples % batch_size == 0
 
-    data_sampler_kwargs = {} if data_sampler_kwargs is None else data_sampler_kwargs
-    task_sampler_kwargs = {} if task_sampler_kwargs is None else task_sampler_kwargs
+    # --- Préparation des kwargs pour Sparse Recovery ---
+    if conf is not None and hasattr(conf, "task") and hasattr(conf.task, "kwargs"):
+        task_kwargs = dict(conf.task.kwargs)
+    else:
+        task_kwargs = {}
 
-    
-    valid_data_keys = ["N", "d", "s", "Phi", "tau"]
-    filtered_data_kwargs = {k: v for k, v in data_sampler_kwargs.items() if k in valid_data_keys}
+    # Fusion avec les overrides éventuels
+    task_kwargs.update(data_sampler_kwargs)
 
-    data_sampler = CompressedSensingSampler(**filtered_data_kwargs)
+    # Vérification des paramètres essentiels
+    for arg in ["N", "d", "s", "tau"]:
+        if arg not in task_kwargs:
+            raise ValueError(f"⚠️ Paramètre '{arg}' manquant dans task_kwargs ou data_sampler_kwargs")
 
-    task_sampler_kwargs = {} if task_sampler_kwargs is None else task_sampler_kwargs
-    task_sampler_kwargs.update(filtered_data_kwargs)  # N, d, s, Phi, tau
+    # --- Data sampler ---
+    data_sampler = get_data_sampler(
+        data_name,
+        N=task_kwargs["N"],
+        d=task_kwargs["d"],
+        s=task_kwargs["s"],
+        Phi=task_kwargs.get("Phi", "identity"),
+        tau=task_kwargs["tau"],
+    )
+
+    # --- Task sampler ---
+    task_sampler_kwargs = dict(task_sampler_kwargs)
+    task_sampler_kwargs.setdefault("N", task_kwargs["N"])
+    task_sampler_kwargs.setdefault("d", task_kwargs["d"])
+    task_sampler_kwargs.setdefault("s", task_kwargs["s"])
+    task_sampler_kwargs.setdefault("Phi", task_kwargs.get("Phi", "identity"))
+    task_sampler_kwargs.setdefault("tau", task_kwargs["tau"])
+
     task_sampler = get_task(task_name, **task_sampler_kwargs)
 
+    # --- Boucle d'évaluation avec gen_coherence_tau() ---
     all_metrics = []
+    tau = task_kwargs["tau"]
 
     for i in range(num_eval_examples // batch_size):
-        xs, xs_p, _, _ = generate_eval_data(
-            task_name,
-            N=data_sampler_kwargs.get("N"),
-            tau=data_sampler_kwargs.get("tau", 1),
-            **{k: v for k, v in data_sampler_kwargs.items() if k not in ["N", "tau"]}
-        )
+        xs, xs_p = gen_coherence_tau(data_sampler, n_points=n_points, b_size=batch_size, tau=tau)
         metrics = eval_batch(model, task_sampler, xs, xs_p)
         all_metrics.append(metrics)
+    print("n_points = ", n_points)
     metrics = torch.cat(all_metrics, dim=0)
     return aggregate_metrics(metrics)
+'''
+
+def eval_model(
+    model,
+    task_name,
+    data_name,
+    n_dims,
+    n_points,
+    num_eval_examples=1280,
+    batch_size=64,
+    data_sampler_kwargs={},
+    task_sampler_kwargs={},
+    conf=None,
+    tau=None,
+    prompting_strategy=None,
+):
+    """
+    Évalue un modèle sur la tâche Sparse Recovery avec perte cumulée par exemple in-context.
+    Retourne les métriques agrégées via aggregate_metrics().
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device).eval()
+    
+    assert num_eval_examples % batch_size == 0
+
+    # --- Préparation des kwargs pour Sparse Recovery ---
+    if conf is not None and hasattr(conf, "task") and hasattr(conf.task, "kwargs"):
+        task_kwargs = dict(conf.task.kwargs)
+    else:
+        task_kwargs = {}
+
+    task_kwargs.update(data_sampler_kwargs)
+
+    for arg in ["N", "d", "s"]:
+        if arg not in task_kwargs:
+            raise ValueError(f"⚠️ Paramètre '{arg}' manquant dans task_kwargs ou data_sampler_kwargs")
+
+    # Si tau n'est pas fourni, on prend celui de la config ou 0
+    if tau is None:
+        tau = task_kwargs.get("tau", 0.0)
+
+    # --- Data sampler ---
+    data_sampler = get_data_sampler(
+        data_name,
+        N=task_kwargs["N"],
+        d=task_kwargs["d"],
+        s=task_kwargs["s"],
+        Phi=task_kwargs.get("Phi", "identity"),
+        tau=tau,
+    )
+
+    # --- Task sampler ---
+    task_sampler_kwargs = dict(task_sampler_kwargs)
+    task_sampler_kwargs.setdefault("N", task_kwargs["N"])
+    task_sampler_kwargs.setdefault("d", task_kwargs["d"])
+    task_sampler_kwargs.setdefault("s", task_kwargs["s"])
+    task_sampler_kwargs.setdefault("Phi", task_kwargs.get("Phi", "identity"))
+    task_sampler_kwargs.setdefault("tau", tau)
+
+    task_sampler = get_task(task_name, **task_sampler_kwargs)
+
+    # --- Boucle d'évaluation cumulative ---
+    all_metrics = []
+
+    for _ in range(num_eval_examples // batch_size):
+        xs, _ = gen_coherence_tau(data_sampler, n_points=n_points, b_size=batch_size, tau=tau)
+        b_size = xs.shape[0]
+        metrics_batch = torch.zeros(b_size, n_points)
+
+        for i in range(n_points):
+            xs_prompt = xs[:, :i + 1, :]
+            ys_pred = model(xs_prompt.to(xs_prompt.device), task_sampler.evaluate(xs_prompt).to(xs_prompt.device))
+            ys_true = task_sampler.evaluate(xs_prompt)
+            loss = task_sampler.get_metric()(ys_pred.cpu(), ys_true)
+            if loss.ndim > 1:
+                metrics_batch[:, i] = loss.mean(dim=1)
+            else:
+                metrics_batch[:, i] = loss
+
+        all_metrics.append(metrics_batch)
+    print("in eval_model")
+    metrics = torch.cat(all_metrics, dim=0)
+    return aggregate_metrics(metrics)
+
+
 
 def aggregate_metrics(metrics, bootstrap_trials=1000):
     """
@@ -227,29 +367,7 @@ def get_run_metrics(
         if not skip_baselines:
             all_models += models.get_relevant_baselines(conf.task.name)
 
-    # --- Préparer les kwargs pour eval_model ---
-    # Inclut les paramètres de task et du dataset
-    data_sampler_kwargs = conf.task.kwargs
-    data_sampler_kwargs["N"] = data_sampler_kwargs.get("N", conf.model.n_positions)
-    data_sampler_kwargs["d"] = data_sampler_kwargs.get("d", conf.model.n_dims)
-    # Créer evaluation_kwargs sous forme de dictionnaire
-    evaluation_kwargs = {
-        "default_eval": {
-            "task_name": conf.task.name,
-            "data_name": "sparse_recovery",
-            "n_dims": conf.model.n_dims,
-            "n_points": conf.model.n_positions,
-            "prompting_strategy": "random",
-            "data_sampler_kwargs": {
-                "N": conf.task.kwargs.get("N"),
-                "d": conf.task.kwargs.get("d"),
-                "s": conf.task.kwargs.get("s"),
-                "Phi": conf.task.kwargs.get("Phi", "normal"),
-                "tau": conf.task.kwargs.get("tau", 1),
-            },
-        }
-    }
-
+    evaluation_kwargs = build_evals(conf)
 
     if not cache:
         save_path = None
@@ -264,12 +382,69 @@ def get_run_metrics(
         cache_created = os.path.getmtime(save_path)
         if checkpoint_created > cache_created:
             recompute = True
-
-    all_metrics = compute_evals(all_models, evaluation_kwargs, save_path, recompute)
+    all_metrics = compute_evals(all_models, evaluation_kwargs, save_path, recompute, conf=conf)
     return all_metrics
 
+def build_evals(conf):
+    n_dims = conf.model.n_dims
+    n_points = conf.training.points
+    batch_size = conf.training.batch_size
 
-def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False):
+    task_name = conf.task.name
+    data_name = conf.task.name
+
+    # Arguments de base (communs à toutes les configs)
+    base_kwargs = {
+        "task_name": task_name,
+        "n_dims": n_dims,
+        "n_points": n_points,
+        "batch_size": batch_size,
+        "data_name": data_name,
+        "prompting_strategy": "standard",
+    }
+
+    evaluation_kwargs = {}
+
+    # Cas standard (par défaut)
+    evaluation_kwargs["standard"] = {"prompting_strategy": "standard"}
+
+    # === Cas Sparse Recovery : on ajoute cohérence avec tau ===
+    if task_name == "sparse_recovery":
+        for tau in [0, 0.5, 1]:
+            evaluation_kwargs[f"tau={tau}"] = {
+                "prompting_strategy": f"coherence_tau_{tau}",
+                "generator_fn": lambda data_sampler, n_pts, b_size, t=tau: gen_coherence_tau(
+                    data_sampler, n_pts, b_size, tau=t
+                ),
+            }
+
+        # Exemple d'évaluation bruitée pour SR
+        evaluation_kwargs["noisy_sparse"] = {
+            "task_sampler_kwargs": {"noise_std": 0.1},
+        }
+    
+    # === Cas Matrix Factorization (exemple générique) ===
+    elif task_name == "matrix_factorization":
+        for rank in [2, 5, 10]:
+            evaluation_kwargs[f"rank={rank}"] = {
+                "task_sampler_kwargs": {"target_rank": rank}
+            }
+        evaluation_kwargs["noisyMF"] = {
+            "task_sampler_kwargs": {"noise_std": 0.1},
+        }
+
+    # === Fusion finale avec base_kwargs ===
+    for name, kwargs in evaluation_kwargs.items():
+        evaluation_kwargs[name] = base_kwargs.copy()
+        evaluation_kwargs[name].update(kwargs)
+
+    return evaluation_kwargs
+
+
+
+
+
+def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False, conf=None):
     try:
         with open(save_path) as fp:
             all_metrics = json.load(fp)
@@ -281,9 +456,14 @@ def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False
         task_name = kwargs.get("task_name", "sparse_recovery")
         data_name = kwargs.get("data_name", "compressed_sensing")
         n_dims = kwargs.get("n_dims")
-        n_points = kwargs.get("n_points")
+        n_points = kwargs["n_points"]
         prompting_strategy = kwargs.get("prompting_strategy", "random")
         data_sampler_kwargs = kwargs.get("data_sampler_kwargs", {})
+
+        # Fusionner avec conf.task.kwargs si dispo
+        if conf is not None and hasattr(conf, "task") and hasattr(conf.task, "kwargs"):
+            task_kwargs = dict(conf.task.kwargs)
+            data_sampler_kwargs = {**task_kwargs, **data_sampler_kwargs}  # priorité à kwargs
 
         metrics = {}
         if eval_name in all_metrics and not recompute:
@@ -301,11 +481,13 @@ def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False
                 n_dims=n_dims,
                 n_points=n_points,
                 prompting_strategy=prompting_strategy,
-                data_sampler_kwargs=data_sampler_kwargs
+                data_sampler_kwargs=data_sampler_kwargs,
+                conf=conf,  # 🔑 on propage la config
             )
 
         all_metrics[eval_name] = metrics
 
+    print("n_points = ", n_points)
     if save_path is not None:
         with open(save_path, "w") as fp:
             json.dump(all_metrics, fp, indent=2)
@@ -314,13 +496,26 @@ def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False
 
 
 
+
 def baseline_names(name):
     if "OLS" in name:
         return "Least Squares"
+    if name == "averaging":
+        return "Averaging"
+    if "NN" in name:
+        k = name.split("_")[1].split("=")[1]
+        return f"{k}-Nearest Neighbors"
     if "lasso" in name:
         alpha = name.split("_")[1].split("=")[1]
         return f"Lasso (alpha={alpha})"
+    if "gd" in name:
+        return "2-layer NN, GD"
+    if "decision_tree" in name:
+        return "Greedy Tree Learning"
+    if "xgboost" in name:
+        return "XGBoost"
     return name
+
 
 def read_run_dir(run_dir):
     all_data = []
@@ -355,40 +550,12 @@ def read_run_dir(run_dir):
 
 
 # --- Boucle principale ---
+
 if __name__ == "__main__":
-    run_dir = "outputs"
-    df_runs = read_run_dir(run_dir)
-    all_results = []
-
-    for _, row in df_runs.iterrows():
-        task_name = row['task']
-        print(f"=== Evaluating {task_name} / {row['run_id']} ===")
-    
-        model, conf = get_model_from_run(row['run_path'])
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = model.to(device).eval()
-        
-        if task_name == "sparse_recovery":
-            taus = [0.0, 0.5, 1.0]
-            results = eval_model(model, task_name, N=16, taus=taus, d=conf.model.n_dims, s=5, Phi=torch.eye(conf.model.n_dims))
-        elif task_name == "matrix_factorization":
-            taus = [0.0, 0.5, 1.0]
-            results = eval_model(model, task_name, N=16, taus=taus, n1=20, n2=20, rank=5)
-        
-        # Transformer les résultats en liste de dicts pour Pandas
-        for tau, metric in results.items():
-            all_results.append({
-                "task": task_name,
-                "run_id": row['run_id'],
-                "tau": tau,
-                "metric": metric.mean().item() if isinstance(metric, torch.Tensor) else metric
-            })
-
-        # Créer le DataFrame final
-        results_df = pd.DataFrame(all_results)
-        print("\n=== Summary ===")
-        print(results_df)
-
-    # Sauvegarder en JSON pour analyse future
-    results_df.to_json(os.path.join(run_dir, "all_runs_metrics.json"), orient="records", indent=2)
-    print("\nMetrics saved to all_runs_metrics.json")
+    run_dir = sys.argv[1]
+    for task in os.listdir(run_dir):
+        task_dir = os.path.join(run_dir, task)
+        print(f"Evaluating task {task}")
+        for run_id in tqdm(os.listdir(task_dir)):
+            run_path = os.path.join(run_dir, task, run_id)
+            metrics = get_run_metrics(run_path)

@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-
+import math
 
 from sparse_recovery.compressed_sensing import create_signal, create_Fourier_basis, create_normal_basis, create_orthonormal_basis, get_measures
 
@@ -36,7 +36,10 @@ class CompressedSensingSampler:
 
         #print(f"[Compressed Sensing Sampler] Using Phi of shape {self.Phi.shape} (type: {type(Phi).__name__})")
 
-    def sample(self, batch_size=1):
+    def sample(self, batch_size=1, n_points=None):
+        if n_points is None:
+            n_points = self.N  # valeur par défaut
+
         """
         Retourne :
             xs : (batch_size, N, d)
@@ -155,3 +158,13 @@ def get_data_sampler(name, **kwargs):
     if name in ("matrix_factorization"):
         return MatrixFactorizationSampler(**kwargs)
     raise ValueError(f"Unknown sampler name: {name}")
+
+
+def sample_transformation(eigenvalues, normalize=False):
+    n_dims = len(eigenvalues)
+    U, _, _ = torch.linalg.svd(torch.randn(n_dims, n_dims))
+    t = U @ torch.diag(eigenvalues) @ torch.transpose(U, 0, 1)
+    if normalize:
+        norm_subspace = torch.sum(eigenvalues**2)
+        t *= math.sqrt(n_dims / norm_subspace)
+    return t

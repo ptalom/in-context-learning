@@ -112,6 +112,7 @@ def train(conf, recompute_metrics=True):
     if recompute_metrics:
         print("\n=== Computing run metrics ===")
         get_run_metrics(run_dir)
+        print(get_run_metrics(run_dir))
 
 # --- Main ---
 '''
